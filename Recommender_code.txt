@@ -1,0 +1,120 @@
+# The code is created on python 3.7
+# Kindly copy the whole text and paste it in Spyder console. Refer to the word document attached for the explanation.
+
+# -*- coding: utf-8 -*-
+"""
+Created on Sat Nov  7 19:39:37 2020
+
+@author: kakash
+"""
+
+import pandas as pd
+import re
+from string import punctuation
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import linear_kernel
+import sys
+import warnings
+if not sys.warnoptions:
+    warnings.simplefilter("ignore")
+
+input_desc=input('Enter preferences: ' )#'good ambience. serving fish'
+input_budget=input('Enter budget for two in Rs.: ' )#'400'
+input_location=input('Enter locations: ' )#'Koramangala'
+input_cuisine=input('Enter cuisines: ' )#'North Indian, Chinese'
+
+
+def get_words(text):
+    wordsRegexpString = '(?:\w+|[' + re.escape(punctuation) + ']+)'
+    wordsRegexp = re.compile(wordsRegexpString)
+    wordsList = wordsRegexp.findall(text.lower())
+    wordsList = [str(a) for a in wordsList]
+    return wordsList
+    
+
+def convertlower_stripspaces(listt):
+    return [str.lower(a.replace(" ", "")) for a in listt]
+
+def remove_puncts(listt):
+    unwanted={'.',',','\'','\"','\'\'','\"\"','.,','\',','\",','\'.','\".'}
+    return [a for a in listt if a not in unwanted ]
+
+def tfidf(listt):
+    tfidf = TfidfVectorizer(stop_words='english')
+    listt= listt.fillna('')
+    tfidf_matrix = tfidf.fit_transform(listt)
+    return (tfidf_matrix)
+
+
+def cosine(matrix,index):
+    cosine_sim = linear_kernel(matrix, matrix)
+    return(cosine_sim[index])
+    
+def normalize(listt):
+    mi=min(listt)
+    mx=max(listt)
+    if mi==mx:
+        return listt
+    else:
+        return ([(a-mi)/(mx-mi) for a in listt])
+    
+def weighted_rate(vote,rate, minvote, meanrate):
+    if vote==0:
+        return rate
+    return (vote/(vote+minvote) * rate) + (minvote/(minvote+vote) * meanrate)
+    
+    
+
+df=pd.read_csv('RestoInfo.csv', sep=',')
+df.rename(columns={'Unnamed: 0': 'ID'}).to_excel('CuratedRestInfo.xlsx',index=False)
+data_raw=pd.read_excel('CuratedRestInfo.xlsx')
+data_clean=data_raw.copy(deep=True)
+#print (data_clean.info())
+
+data_clean['Description']=data_clean['rest_type'].astype(str)+" "+ data_clean['dish_liked'].astype(str)+" "+ data_clean['reviews_list'].astype(str)+" "+ data_clean['menu_item'].astype(str)+" "+ data_clean['listed_in(type)'].astype(str)
+data_clean['Description']=[a.replace('nan','').replace('[]','').replace('[','').replace(']','').replace('(','').replace(')','') for a in data_clean['Description']]
+data_clean['valid_Description']=data_clean['Description'].apply(lambda x: get_words(x))
+data_clean['valid_Description']=data_clean['valid_Description'].apply(lambda x: remove_puncts(x))
+data_clean['valid_cuisines']=[convertlower_stripspaces(a.split(',')) for a in data_clean['cuisines']]
+data_clean['valid_location']=data_clean['location'].apply(lambda x: get_words(x))
+
+featured_data=data_clean[['ID', 'name','approx_cost(for two people)', 'valid_cuisines', 'valid_location', 'valid_Description']]
+featured_data['approx_cost(for two people)']=pd.to_numeric([float(str(a).replace(',','')) for a in featured_data['approx_cost(for two people)']])
+featured_data['valid_location']=[' '.join(i) for i in featured_data['valid_location']]
+featured_data['valid_Description']=[' '.join(i) for i in featured_data['valid_Description']]
+featured_data['valid_cuisines']=[' '.join(i) for i in featured_data['valid_cuisines']]
+
+valid_input_desc=' '.join(remove_puncts(get_words(input_desc)))
+valid_input_budget=int(input_budget)
+valid_input_location=' '.join(remove_puncts(get_words(input_location)))
+valid_input_cuisine=' '.join(convertlower_stripspaces(input_cuisine.split(',')))
+high=valid_input_budget+200
+
+train_data=featured_data[(featured_data['approx_cost(for two people)']<=high)]
+inputdf = {'name': 'userinput', 'valid_cuisines': valid_input_cuisine, 'valid_location': valid_input_location,'valid_Description': valid_input_desc,'approx_cost(for two people)': valid_input_budget } 
+train_data = train_data.append(inputdf, ignore_index = True) 
+train_data['cuisine_score']=cosine(tfidf(train_data['valid_cuisines']),len(train_data)-1)
+train_data['location_score']=cosine(tfidf(train_data['valid_location']),len(train_data)-1)
+train_data['description_score']=cosine(tfidf(train_data['valid_Description']),len(train_data)-1)
+train_data['total_score']=train_data['location_score']+train_data['cuisine_score']+train_data['description_score']
+train_data=train_data[train_data['name'] !='userinput']
+train_data['cuisine_score']=normalize(train_data['cuisine_score'])
+train_data['location_score']=normalize(train_data['location_score'])
+train_data['description_score']=normalize(train_data['description_score'])
+train_data=train_data.sort_values(['location_score','cuisine_score','description_score'], ascending=[False,False,False])
+train_data=train_data[(train_data['cuisine_score']!=0)&(train_data['location_score']!=0)]
+train_data=train_data.drop_duplicates(subset=['name','valid_location','valid_cuisines']).reset_index(drop=True)
+
+if len(train_data)==0:
+    print('I am sorry. I cant find any restaurants suiting your preference')
+elif len(train_data)>=3:
+    train_data['likely %']=train_data['total_score'].apply(lambda x: x*100/3)
+    train_data=train_data.sort_values(['likely %'], ascending=[False])
+    print('Here are the top restaurants matching your prefernce: \n',train_data[['name','likely %']].head(3))
+else:
+    train_data['likely %']=train_data['total_score'].apply(lambda x: x*100/3)
+    train_data=train_data.sort_values(['likely %'], ascending=[False])
+    print('Here are the top restaurants matching your prefernce: \n',train_data[['name','likely %']])
+    
+ 
+    
